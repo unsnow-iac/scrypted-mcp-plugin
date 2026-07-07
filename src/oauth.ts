@@ -35,7 +35,7 @@ export const DEFAULT_ACCESS_TOKEN_TTL_SEC = 60 * 60; // 1h
 // PKCE dance every hour. 30 days is the upper bound on how long a stolen RT remains useful;
 // the rotating-on-use store below is what makes that bound tolerable for a public PKCE
 // client. (Without rotation, a captured RT would be a 30-day password.)
-export const DEFAULT_REFRESH_TOKEN_TTL_SEC = 30 * 24 * 60 * 60; // 30d
+export const DEFAULT_REFRESH_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7d (fork default; was 30d upstream)
 export const ACCESS_TOKEN_TTL_MIN_SEC = 60; // 1 minute floor — anything shorter is degenerate
 export const ACCESS_TOKEN_TTL_MAX_SEC = 24 * 60 * 60; // 1 day ceiling
 export const REFRESH_TOKEN_TTL_MIN_SEC = 60 * 60; // 1 hour floor

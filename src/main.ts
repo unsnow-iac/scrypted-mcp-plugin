@@ -35,6 +35,8 @@ import {
     callDeviceMethod,
     callDeviceMethodInput,
     callDeviceMethodReadOnly,
+    exportConfig,
+    exportConfigInput,
     getDevice,
     getDeviceInput,
     listDevices,
@@ -137,7 +139,7 @@ function wrap<TArgs, TResult>(handler: (args: TArgs) => Promise<TResult>, opts: 
 // `getMaxRestoreBytes` is plumbed through so tools that need access to plugin settings
 // (currently just restore_backup) can read the live value without coupling to the plugin
 // instance directly.
-function createMcpServer(getMaxRestoreBytes: () => number, profile: ToolProfile): McpServer {
+function createMcpServer(getMaxRestoreBytes: () => number, profile: ToolProfile, log: (msg: string) => void): McpServer {
     const server = new McpServer(
         { name: 'scrypted-mcp-unsnow', version: '1.0.7' },
         {
@@ -166,7 +168,7 @@ function createMcpServer(getMaxRestoreBytes: () => number, profile: ToolProfile)
     // install/restart/restore/user/network). Anything not in a set below is full-only.
     const READ_ONLY_TOOLS = new Set<string>([
         'list_plugins', 'get_plugin_info', 'npm_info', 'get_id_for_native_id',
-        'list_devices', 'get_device', 'call_device_method',
+        'list_devices', 'get_device', 'call_device_method', 'export_config',
         'get_logs', 'list_alerts', 'list_cluster_workers',
         'get_local_addresses', 'get_external_addresses', 'get_cors',
     ]);
@@ -180,7 +182,13 @@ function createMcpServer(getMaxRestoreBytes: () => number, profile: ToolProfile)
         (profile === 'config' && CONFIG_TOOLS.has(name));
     const reg = (name: string, config: any, handler: any): void => {
         if (!toolAllowed(name)) return;
-        server.registerTool(name as any, config, handler);
+        // Audit trail: log tool name + active profile on each call. Never log args — set_dotenv /
+        // set_storage / restore_backup args carry secrets.
+        const audited = async (args: any) => {
+            log(`tool=${name} profile=${profile}`);
+            return handler(args);
+        };
+        server.registerTool(name as any, config, audited);
     };
 
     reg(
@@ -531,6 +539,22 @@ function createMcpServer(getMaxRestoreBytes: () => number, profile: ToolProfile)
             },
         },
         wrap(profile === 'read_only' ? callDeviceMethodReadOnly : callDeviceMethod),
+    );
+
+    reg(
+        'export_config',
+        {
+            description:
+                'One-shot read-only snapshot of getSettings() for every config-bearing device (those implementing the Settings interface). Optional name substring / type filters. Password- and secret-typed values are redacted (***redacted***) — read a raw value in the config tier via call_device_method(getSettings) on a specific device.',
+            inputSchema: exportConfigInput.shape,
+            annotations: {
+                title: 'Export config',
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false,
+            },
+        },
+        wrap(exportConfig),
     );
 
     reg(
@@ -1283,7 +1307,7 @@ class ScryptedMcpPlugin extends ScryptedDeviceBase implements HttpRequestHandler
                 this.sessions.delete(sid);
             },
         });
-        const server = createMcpServer(() => this.getMaxRestoreBytes(), this.getToolProfile());
+        const server = createMcpServer(() => this.getMaxRestoreBytes(), this.getToolProfile(), (m) => this.console.log('[audit]', m));
         const entry: SessionEntry = { transport, server, lastSeen: Date.now() };
         entryRef.current = entry;
         transport.onclose = () => {
