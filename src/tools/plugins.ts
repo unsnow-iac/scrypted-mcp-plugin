@@ -6,7 +6,7 @@ import { getComponent, systemManager } from '../scrypted';
 // and exposing it would let any authorized caller forge tokens or hijack registered
 // clients. There's no legitimate reason for an MCP tool call to read or write the MCP
 // plugin's own storage, so the block is a hard reject rather than a redaction.
-const SELF_PLUGIN_ID = 'scrypted-mcp';
+const SELF_PLUGIN_ID = 'scrypted-mcp-unsnow';
 
 function refuseIfOwnPlugin(deviceId: string): void {
     const dev = systemManager.getDeviceById(deviceId) as { pluginId?: string } | undefined;

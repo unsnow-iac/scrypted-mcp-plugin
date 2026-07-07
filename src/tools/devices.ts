@@ -79,3 +79,18 @@ export async function callDeviceMethod(args: z.infer<typeof callDeviceMethodInpu
         return { result: String(result) };
     }
 }
+
+// Fork addition (unsnow): read_only tool_profile enforcement. Allow only observation getters
+// through call_device_method — reject anything that could mutate a device or its config.
+// getSettings (config read) matches the getter pattern; turnOn / setX / putSetting / ptzCommand
+// / startIntercom / etc. do not.
+const READ_ONLY_METHOD_RE = /^(get|list|is|has|describe|fetch)[A-Z0-9]/;
+export async function callDeviceMethodReadOnly(args: z.infer<typeof callDeviceMethodInput>) {
+    if (!READ_ONLY_METHOD_RE.test(args.method)) {
+        throw new Error(
+            `read_only tool_profile: method '${args.method}' is not a read-only getter and is blocked. ` +
+                `Set the MCP plugin's tool_profile to 'config' (or 'full') to allow mutating device methods.`,
+        );
+    }
+    return callDeviceMethod(args);
+}

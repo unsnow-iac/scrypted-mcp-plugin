@@ -1,17 +1,17 @@
 {
-    "name": "scrypted-mcp",
+    "name": "scrypted-mcp-unsnow",
     "version": "1.0.7",
     "description": "Scrypted plugin that exposes a Streamable HTTP Model Context Protocol endpoint, with OAuth backed by Scrypted user accounts. Lets AI assistants inspect logs, manage plugins, and query devices on the same Scrypted server.",
     "license": "MIT",
     "author": "Sergey Vilgelm <sergey@vilgelm.com>",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/sv-tools/scrypted-mcp-plugin.git"
+        "url": "git+https://github.com/unsnow-iac/scrypted-mcp-plugin.git"
     },
     "bugs": {
-        "url": "https://github.com/sv-tools/scrypted-mcp-plugin/issues"
+        "url": "https://github.com/unsnow-iac/scrypted-mcp-plugin/issues"
     },
-    "homepage": "https://github.com/sv-tools/scrypted-mcp-plugin#readme",
+    "homepage": "https://github.com/unsnow-iac/scrypted-mcp-plugin#readme",
     "files": [
         "dist/plugin.zip"
     ],
@@ -42,7 +42,7 @@
         "claude"
     ],
     "scrypted": {
-        "name": "MCP Server",
+        "name": "MCP Server (unsnow)",
         "type": "API",
         "interfaces": [
             "HttpRequestHandler",

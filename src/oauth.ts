@@ -554,7 +554,7 @@ export class OAuthService {
     // "log in first" page instead of Scrypted's plain-text 401.
     private endpoints(req: HttpRequest) {
         const origin = originFromRequest(req);
-        const root = pluginRoot(req.rootPath ?? '/endpoint/scrypted-mcp');
+        const root = pluginRoot(req.rootPath ?? '/endpoint/scrypted-mcp-unsnow');
         const base = `${origin}${root}/public`;
         return {
             origin,

@@ -34,6 +34,7 @@ import { listClusterWorkers, listClusterWorkersInput } from './tools/cluster';
 import {
     callDeviceMethod,
     callDeviceMethodInput,
+    callDeviceMethodReadOnly,
     getDevice,
     getDeviceInput,
     listDevices,
@@ -98,6 +99,9 @@ import {
 } from './tools/server';
 import { addUser, addUserInput, listUsers, listUsersInput, removeUser, removeUserInput } from './tools/users';
 
+// Fork addition (unsnow): capability tier gating the registered tool surface. read_only < config < full.
+type ToolProfile = 'read_only' | 'config' | 'full';
+
 // Wrapper around tool handlers. Two responsibilities:
 //   1. Catch thrown errors and surface them as structured MCP error responses (`isError: true`).
 //   2. For most tools, JSON-stringify the return value so the LLM gets a single text block.
@@ -133,9 +137,9 @@ function wrap<TArgs, TResult>(handler: (args: TArgs) => Promise<TResult>, opts: 
 // `getMaxRestoreBytes` is plumbed through so tools that need access to plugin settings
 // (currently just restore_backup) can read the live value without coupling to the plugin
 // instance directly.
-function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
+function createMcpServer(getMaxRestoreBytes: () => number, profile: ToolProfile): McpServer {
     const server = new McpServer(
-        { name: 'scrypted-mcp', version: '1.0.7' },
+        { name: 'scrypted-mcp-unsnow', version: '1.0.7' },
         {
             instructions: [
                 'This MCP server runs inside a Scrypted plugin and controls the same Scrypted server (https://scrypted.app).',
@@ -149,11 +153,37 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
                 'Backup: create_backup returns the ZIP inline as a base64 blob; restore_backup takes a base64 blob input and is destructive (triggers a user confirmation prompt).',
                 'Tool annotations are set: prefer readOnly tools freely; destructive tools (set_*, clear_*, remove_*, kill_*, restart/update_server, restore_backup) should be surfaced to the user first.',
                 'Logs are retained ~48h; pass `sinceMs` to focus on a recent window.',
+                `Active tool_profile=${profile}: only a subset of the tools below is registered (read_only < config < full). Tools that are not registered are intentionally disabled — do not attempt them.`,
             ].join(' '),
         },
     );
 
-    server.registerTool(
+    // Fork addition (unsnow): capability gating by tool_profile. Registration goes through
+    // reg(); tools not permitted by the active profile are never registered, so the client
+    // never sees them. read_only: inspection + read-only device getters. config: adds config
+    // edits (device putSettings, get/set_storage, set_mixins, rename_device_id, dotenv/
+    // server-info read, backup snapshot). full: everything (upstream surface, incl.
+    // install/restart/restore/user/network). Anything not in a set below is full-only.
+    const READ_ONLY_TOOLS = new Set<string>([
+        'list_plugins', 'get_plugin_info', 'npm_info', 'get_id_for_native_id',
+        'list_devices', 'get_device', 'call_device_method',
+        'get_logs', 'list_alerts', 'list_cluster_workers',
+        'get_local_addresses', 'get_external_addresses', 'get_cors',
+    ]);
+    const CONFIG_TOOLS = new Set<string>([
+        'get_storage', 'set_storage', 'set_mixins', 'rename_device_id',
+        'get_dotenv', 'get_server_info', 'create_backup',
+    ]);
+    const toolAllowed = (name: string): boolean =>
+        profile === 'full' ||
+        READ_ONLY_TOOLS.has(name) ||
+        (profile === 'config' && CONFIG_TOOLS.has(name));
+    const reg = (name: string, config: any, handler: any): void => {
+        if (!toolAllowed(name)) return;
+        server.registerTool(name as any, config, handler);
+    };
+
+    reg(
         'list_plugins',
         {
             description:
@@ -169,7 +199,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(listPlugins),
     );
 
-    server.registerTool(
+    reg(
         'get_plugin_info',
         {
             description: 'Inspect a plugin: pid, pending RPC calls, object count, etc.',
@@ -184,7 +214,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getPluginInfo),
     );
 
-    server.registerTool(
+    reg(
         'reload_plugin',
         {
             description: 'Restart a plugin host process (preserves state, picks up code changes).',
@@ -200,7 +230,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(reloadPlugin),
     );
 
-    server.registerTool(
+    reg(
         'kill_plugin',
         {
             description:
@@ -217,7 +247,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(killPlugin),
     );
 
-    server.registerTool(
+    reg(
         'install_plugin',
         {
             description: 'Install (or upgrade) a plugin from npm. Returns the plugin device id.',
@@ -233,7 +263,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(installPlugin),
     );
 
-    server.registerTool(
+    reg(
         'update_plugins',
         {
             description: 'Check all installed plugins against npm and upgrade any that are outdated.',
@@ -249,7 +279,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(updatePlugins),
     );
 
-    server.registerTool(
+    reg(
         'npm_info',
         {
             description:
@@ -265,7 +295,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(npmInfo),
     );
 
-    server.registerTool(
+    reg(
         'rename_device_id',
         {
             description:
@@ -282,7 +312,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(renameDeviceId),
     );
 
-    server.registerTool(
+    reg(
         'set_mixins',
         {
             description:
@@ -299,7 +329,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(setMixins),
     );
 
-    server.registerTool(
+    reg(
         'get_storage',
         {
             description: "Read a plugin device's persistent KV storage (string keys, string values).",
@@ -314,7 +344,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getStorage),
     );
 
-    server.registerTool(
+    reg(
         'set_storage',
         {
             description:
@@ -331,7 +361,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(setStorage),
     );
 
-    server.registerTool(
+    reg(
         'get_id_for_native_id',
         {
             description:
@@ -347,7 +377,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getIdForNativeId),
     );
 
-    server.registerTool(
+    reg(
         'disconnect_clients',
         {
             description: 'Disconnect all websocket clients of a plugin (forces reconnection).',
@@ -363,7 +393,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(disconnectClients),
     );
 
-    server.registerTool(
+    reg(
         'clear_console',
         {
             description: "Clear a plugin device's console buffer. Useful for setting up a clean repro window.",
@@ -379,7 +409,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(clearConsole),
     );
 
-    server.registerTool(
+    reg(
         'get_logs',
         {
             description:
@@ -395,7 +425,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getLogs),
     );
 
-    server.registerTool(
+    reg(
         'clear_logs',
         {
             description: 'Clear the server-side log buffer. Returns { cleared: true } on success.',
@@ -411,7 +441,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(clearLogs),
     );
 
-    server.registerTool(
+    reg(
         'list_alerts',
         {
             description:
@@ -427,7 +457,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(listAlerts),
     );
 
-    server.registerTool(
+    reg(
         'remove_alert',
         {
             description: 'Remove a single alert by id (use the `id` field from list_alerts).',
@@ -443,7 +473,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(removeAlert),
     );
 
-    server.registerTool(
+    reg(
         'clear_alerts',
         {
             description: 'Remove all alerts. Returns { cleared: true } on success.',
@@ -459,7 +489,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(clearAlerts),
     );
 
-    server.registerTool(
+    reg(
         'list_devices',
         {
             description: 'List devices on the Scrypted server. Filter by interface, type, or name substring.',
@@ -474,7 +504,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(listDevices),
     );
 
-    server.registerTool(
+    reg(
         'get_device',
         {
             description:
@@ -490,7 +520,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getDevice),
     );
 
-    server.registerTool(
+    reg(
         'call_device_method',
         {
             description:
@@ -500,10 +530,10 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
                 title: 'Call device method',
             },
         },
-        wrap(callDeviceMethod),
+        wrap(profile === 'read_only' ? callDeviceMethodReadOnly : callDeviceMethod),
     );
 
-    server.registerTool(
+    reg(
         'get_server_info',
         {
             description: 'Get Scrypted server version and SCRYPTED_* environment variables.',
@@ -518,7 +548,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getServerInfo),
     );
 
-    server.registerTool(
+    reg(
         'restart_server',
         {
             description: 'Restart the Scrypted server. The current MCP connection will drop and need to reconnect.',
@@ -534,7 +564,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(restartServer),
     );
 
-    server.registerTool(
+    reg(
         'update_server',
         {
             description:
@@ -551,7 +581,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(updateServer),
     );
 
-    server.registerTool(
+    reg(
         'get_dotenv',
         {
             description:
@@ -567,7 +597,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getDotEnv),
     );
 
-    server.registerTool(
+    reg(
         'set_dotenv',
         {
             description:
@@ -584,7 +614,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(setDotEnv),
     );
 
-    server.registerTool(
+    reg(
         'list_users',
         {
             description: 'List Scrypted user accounts (username + admin flag).',
@@ -599,7 +629,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(listUsers),
     );
 
-    server.registerTool(
+    reg(
         'add_user',
         {
             description: 'Create a new Scrypted user. Omit aclId to create an admin.',
@@ -615,7 +645,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(addUser),
     );
 
-    server.registerTool(
+    reg(
         'remove_user',
         {
             description: 'Delete a Scrypted user by username.',
@@ -631,7 +661,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(removeUser),
     );
 
-    server.registerTool(
+    reg(
         'get_local_addresses',
         {
             description: 'Get the configured local addresses / interface names that Scrypted advertises.',
@@ -646,7 +676,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getLocalAddresses),
     );
 
-    server.registerTool(
+    reg(
         'set_local_addresses',
         {
             description: 'Replace the configured local addresses. Pass interface names ("en0") or IPs.',
@@ -662,7 +692,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(setLocalAddresses),
     );
 
-    server.registerTool(
+    reg(
         'get_external_addresses',
         {
             description: 'Get the configured external (publicly reachable) addresses for a plugin endpoint.',
@@ -677,7 +707,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getExternalAddresses),
     );
 
-    server.registerTool(
+    reg(
         'set_external_addresses',
         {
             description: 'Replace the configured external addresses for a plugin endpoint.',
@@ -693,7 +723,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(setExternalAddresses),
     );
 
-    server.registerTool(
+    reg(
         'get_cors',
         {
             description: 'Get the CORS origin allowlist for a plugin endpoint.',
@@ -708,7 +738,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(getCors),
     );
 
-    server.registerTool(
+    reg(
         'set_cors',
         {
             description: 'Replace the CORS origin allowlist for a plugin endpoint.',
@@ -724,7 +754,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(setCors),
     );
 
-    server.registerTool(
+    reg(
         'list_cluster_workers',
         {
             description: 'List registered Scrypted cluster worker nodes (id, name, labels, mode, address, fork count).',
@@ -739,7 +769,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(listClusterWorkers),
     );
 
-    server.registerTool(
+    reg(
         'create_backup',
         {
             description:
@@ -759,7 +789,7 @@ function createMcpServer(getMaxRestoreBytes: () => number): McpServer {
         wrap(createBackup, { rawContent: true }),
     );
 
-    server.registerTool(
+    reg(
         'restore_backup',
         {
             description: [
@@ -805,6 +835,8 @@ const STORAGE_KEY_DCR_MAX_CLIENTS = 'settings.dcr_max_clients';
 const STORAGE_KEY_ACCESS_TOKEN_TTL_SEC = 'settings.access_token_ttl_sec';
 const STORAGE_KEY_REFRESH_TOKEN_TTL_SEC = 'settings.refresh_token_ttl_sec';
 const STORAGE_KEY_MAX_RESTORE_MB = 'settings.max_restore_mb';
+const STORAGE_KEY_TOOL_PROFILE = 'settings.tool_profile';
+const DEFAULT_TOOL_PROFILE: ToolProfile = 'read_only';
 const DEFAULT_DCR_MAX_CLIENTS = 100;
 const DEFAULT_MAX_RESTORE_MB = 500;
 const MIN_MAX_RESTORE_MB = 1;
@@ -891,6 +923,14 @@ class ScryptedMcpPlugin extends ScryptedDeviceBase implements HttpRequestHandler
             MIN_MAX_RESTORE_MB,
             MAX_MAX_RESTORE_MB,
         );
+    }
+
+    // Fork addition (unsnow): active capability tier. Fails closed to read_only on any
+    // missing/unexpected stored value — never fall through to a more-privileged profile.
+    private getToolProfile(): ToolProfile {
+        const raw = this.storage.getItem(STORAGE_KEY_TOOL_PROFILE);
+        if (raw === 'config' || raw === 'full') return raw;
+        return DEFAULT_TOOL_PROFILE;
     }
 
     private getMaxRestoreBytes(): number {
@@ -996,6 +1036,19 @@ class ScryptedMcpPlugin extends ScryptedDeviceBase implements HttpRequestHandler
                 value: this.getMaxRestoreMb(),
             },
             {
+                key: 'tool_profile',
+                title: 'Tool profile (capability tier)',
+                description: [
+                    'read_only (default): inspection + read-only device getters (getSettings) — no mutation.',
+                    'config: adds config edits (device putSettings, get/set_storage, set_mixins, rename_device_id, dotenv/server-info read, backup snapshot).',
+                    'full: everything, incl. install_plugin / update / restart / restore / user & network admin (upstream behaviour).',
+                ].join(' '),
+                type: 'string',
+                choices: ['read_only', 'config', 'full'],
+                group: 'Configuration',
+                value: this.getToolProfile(),
+            },
+            {
                 key: 'active_sessions',
                 title: 'Active MCP sessions',
                 description: 'In-memory MCP sessions currently held open. Idle sessions are reaped after 1h.',
@@ -1058,6 +1111,11 @@ class ScryptedMcpPlugin extends ScryptedDeviceBase implements HttpRequestHandler
             );
         } else if (key === 'max_restore_mb') {
             this.writeIntegerSetting(key, value, STORAGE_KEY_MAX_RESTORE_MB, MIN_MAX_RESTORE_MB, MAX_MAX_RESTORE_MB);
+        } else if (key === 'tool_profile') {
+            const v = String(value);
+            if (v !== 'read_only' && v !== 'config' && v !== 'full')
+                throw new Error(`tool_profile must be one of read_only|config|full, got ${v}`);
+            this.storage.setItem(STORAGE_KEY_TOOL_PROFILE, v);
         } else if (key === 'revoke_all') {
             const counts = await this.oauth.revokeAll();
             const closed = this.closeAllSessions();
@@ -1225,7 +1283,7 @@ class ScryptedMcpPlugin extends ScryptedDeviceBase implements HttpRequestHandler
                 this.sessions.delete(sid);
             },
         });
-        const server = createMcpServer(() => this.getMaxRestoreBytes());
+        const server = createMcpServer(() => this.getMaxRestoreBytes(), this.getToolProfile());
         const entry: SessionEntry = { transport, server, lastSeen: Date.now() };
         entryRef.current = entry;
         transport.onclose = () => {
